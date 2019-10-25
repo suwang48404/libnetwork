@@ -337,28 +337,18 @@ func (d *driver) DiscoverNew(dType discoverapi.DiscoveryType, data interface{}) 
 		if err != nil {
 			return types.InternalErrorf("failed to initialize data store: %v", err)
 		}
-	case discoverapi.EncryptionKeysConfig:
-		encrData, ok := data.(discoverapi.DriverEncryptionConfig)
-		if !ok {
-			return fmt.Errorf("invalid encryption key notification data")
-		}
-		keys := make([]*key, 0, len(encrData.Keys))
-		for i := 0; i < len(encrData.Keys); i++ {
-			k := &key{
-				value: encrData.Keys[i],
-				tag:   uint32(encrData.Tags[i]),
-			}
-			keys = append(keys, k)
-		}
-		if err := d.setKeys(keys); err != nil {
-			logrus.Warn(err)
-		}
 	case discoverapi.EncryptionKeysUpdate:
 		var newKey, delKey, priKey *key
-		encrData, ok := data.(discoverapi.DriverEncryptionUpdate)
+		in := data.([]interface{})
+		encrData, ok := in[0].(discoverapi.DriverEncryptionUpdate)
 		if !ok {
 			return fmt.Errorf("invalid encryption key notification data")
 		}
+		recoverData, ok := in[1].(discoverapi.DriverEncryptionConfig)
+		if !ok {
+			return fmt.Errorf("invalid encryption key notification data, %v", recoverData)
+		}
+
 		if encrData.Key != nil {
 			newKey = &key{
 				value: encrData.Key,
@@ -377,9 +367,32 @@ func (d *driver) DiscoverNew(dType discoverapi.DiscoveryType, data interface{}) 
 				tag:   uint32(encrData.PruneTag),
 			}
 		}
-		if err := d.updateKeys(newKey, priKey, delKey); err != nil {
+		err := d.updateKeys(newKey, priKey, delKey)
+		if err == nil {
+			return nil
+		}
+		logrus.Warn(err)
+		// update failed, fallthrough to reset keys.
+		data = recoverData
+		fallthrough
+
+	case discoverapi.EncryptionKeysConfig:
+		encrData, ok := data.(discoverapi.DriverEncryptionConfig)
+		if !ok {
+			return fmt.Errorf("invalid encryption key notification data")
+		}
+		keys := make([]*key, 0, len(encrData.Keys))
+		for i := 0; i < len(encrData.Keys); i++ {
+			k := &key{
+				value: encrData.Keys[i],
+				tag:   uint32(encrData.Tags[i]),
+			}
+			keys = append(keys, k)
+		}
+		if err := d.setKeys(keys); err != nil {
 			logrus.Warn(err)
 		}
+
 	default:
 	}
 	return nil

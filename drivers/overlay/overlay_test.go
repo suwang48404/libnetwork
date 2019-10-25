@@ -3,8 +3,10 @@ package overlay
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -54,8 +56,9 @@ func setupDriver(t *testing.T) *driverTester {
 		t.Fatal(err)
 	}
 	data := discoverapi.NodeDiscoveryData{
-		Address: addrs[0].String(),
-		Self:    true,
+		Address:     strings.Split(addrs[0].String(), "/")[0],
+		BindAddress: strings.Split(addrs[0].String(), "/")[0],
+		Self:        true,
 	}
 	dt.d.DiscoverNew(discoverapi.NodeDiscovery, data)
 	return dt
@@ -174,4 +177,75 @@ func TestNetlinkSocket(t *testing.T) {
 			t.Fatalf("Timeout expired")
 		}
 	}
+}
+
+func TestEncryptionMissingUpdate(t *testing.T) {
+	dt := setupDriver(t)
+	d := dt.d
+
+	if d.advertiseAddress == "" || d.bindAddress == "" {
+		t.Fatalf("Driver IP addresses not initialized")
+	}
+
+	type TestKey struct {
+		key []byte
+		tag uint64
+	}
+	var testKeys []TestKey
+
+	for i := 0; i < 40; i++ {
+		testKeys = append(testKeys,
+			TestKey{
+				[]byte(fmt.Sprintf("Key %v", i)),
+				uint64(i),
+			})
+	}
+
+	cfgEnc := discoverapi.DriverEncryptionConfig{}
+	updtEnc := discoverapi.DriverEncryptionUpdate{}
+	staleIdx, priIdx, newIdx, pruneIdx := 0, 1, 2, 0
+	for newIdx+1 < len(testKeys) {
+		cfgEnc.Keys = append(cfgEnc.Keys, testKeys[priIdx].key)
+		cfgEnc.Tags = append(cfgEnc.Tags, testKeys[priIdx].tag)
+		cfgEnc.Keys = append(cfgEnc.Keys, testKeys[newIdx].key)
+		cfgEnc.Tags = append(cfgEnc.Tags, testKeys[newIdx].tag)
+		cfgEnc.Keys = append(cfgEnc.Keys, testKeys[staleIdx].key)
+		cfgEnc.Tags = append(cfgEnc.Tags, testKeys[staleIdx].tag)
+		if staleIdx == 0 {
+			// initial key setup
+			if err := d.DiscoverNew(discoverapi.EncryptionKeysConfig, cfgEnc); err != nil {
+				t.Fatal(err)
+			}
+
+			// emulate couple remote ep.
+			if err := setupEncryption(
+				net.ParseIP(d.bindAddress), net.ParseIP(d.advertiseAddress), net.ParseIP("192.1.2.1"),
+				4097, d.secMap, d.keys); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// new -> prim, prim-> stale, stale-> prune
+		pruneIdx = staleIdx
+		staleIdx = priIdx
+		priIdx = newIdx
+		newIdx++
+
+		if rand.Int()&0x3 == 0 {
+			// skip 1 of 4.
+			t.Logf("Skipping at priIdx %v", priIdx)
+			continue
+		}
+		updtEnc.Primary = testKeys[priIdx].key
+		updtEnc.PrimaryTag = testKeys[priIdx].tag
+		updtEnc.Key = testKeys[newIdx].key
+		updtEnc.Tag = testKeys[newIdx].tag
+		updtEnc.Prune = testKeys[pruneIdx].key
+		updtEnc.PruneTag = testKeys[pruneIdx].tag
+
+		if err := d.DiscoverNew(
+			discoverapi.EncryptionKeysUpdate, []interface{}{updtEnc, cfgEnc}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clearEncryptionStates()
 }

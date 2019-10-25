@@ -180,8 +180,11 @@ func (c *controller) handleKeyChange(keys []*types.EncryptionKey) error {
 		a.networkDB.RemoveKey(deleted)
 	}
 
+	drvCfgEnc := discoverapi.DriverEncryptionConfig{}
+	drvCfgEnc.Keys, drvCfgEnc.Tags = c.getKeys(subsysIPSec)
+
 	c.drvRegistry.WalkDrivers(func(name string, driver driverapi.Driver, capability driverapi.Capability) bool {
-		err := driver.DiscoverNew(discoverapi.EncryptionKeysUpdate, drvEnc)
+		err := driver.DiscoverNew(discoverapi.EncryptionKeysUpdate, []interface{}{drvEnc, drvCfgEnc})
 		if err != nil {
 			logrus.Warnf("Failed to update datapath keys in driver %s: %v", name, err)
 		}
